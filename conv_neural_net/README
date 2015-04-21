@@ -1,0 +1,31 @@
+## conv2.py contain class for creating Convolutional layer ##
+you can use API by 
+
+cl = ConvolutionalLayer()
+cl.setKernels()
+
+# The API as method 
+	apply(maps) #This function take feature maps to and apply kernel to get new feature maps
+	pooling_max(maps) apply maximum polling map
+	pooling_avg(maps) apply average polling map
+
+eg:-
+cl = ConvolutionalLayer()
+cl.setKernels()
+img = cv2.imread('1.jpg')
+img = cv2.resize(img, (50, 65))
+
+#create map of R, G, B color
+maps = []
+maps.append(img[:,:,0])
+maps.append(img[:,:,1])
+maps.append(img[:,:,2])
+
+#now apply polling and kernel
+
+maps = cl.apply(maps)
+maps = cl.pooling_max(maps)
+maps = cl.apply(maps)
+maps = cl.pooling_max(maps)
+maps = cl.apply(maps)
+maps = cl.pooling_avg(maps)
