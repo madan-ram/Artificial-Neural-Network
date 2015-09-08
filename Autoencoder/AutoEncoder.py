@@ -13,23 +13,23 @@ class AutoEncoder:
     		param number_of_input_units {default => 100} : number of input units
     		param number_of_hidden_units {default => 50} : number of hidden units
     	"""
-        self.tied_weights = tied_weights
 
+        self.data_encoded = None
         self.X = None
         self.data_shared = None
         self.step_cache = []
+        self.tied_weights = tied_weights
 
         self.number_of_hidden_units = number_of_hidden_units
         self.number_of_input_units = number_of_input_units
         self.number_of_output_layer = self.number_of_input_units
 
         self.theano_rng = RandomStreams(np.random.randint(2 ** 30))
+        r = np.sqrt(6) / np.sqrt(self.number_of_hidden_units + self.number_of_input_units + 1)
 
-        r = np.sqrt(6) / np.sqrt(number_of_hidden_units + number_of_input_units + 1)
-        
         self.W = theano.shared(
            np.asarray(
-                np.random.uniform(low=-r, high=r, size=(number_of_input_units, number_of_hidden_units)),
+                np.random.uniform(low=-r, high=r, size=(self.number_of_input_units, self.number_of_hidden_units)),
                 dtype=theano.config.floatX
             ),
             borrow=True
@@ -54,9 +54,6 @@ class AutoEncoder:
         else:
             self.W_prime = self.W.T
 
-    def get_params_for_fully_connected(self):
-        return self.params[:-1]
-
     def get_params(self):
         return self.params
 
@@ -80,7 +77,9 @@ class AutoEncoder:
     	params X: is input on which non linearity as to be applied.
     	params type {default => 'SIGMOID'}: specify what type of non linearity function to be used (options => {'SIGMOID', tanh, ReLU}).
     	"""
-        if type == 'SIGMOID':
+        if type == 'LINEAR':
+            return X
+        elif type == 'SIGMOID':
             return T.nnet.sigmoid(X)
         elif type == 'TANH':
             return T.tanh(X)
@@ -93,7 +92,7 @@ class AutoEncoder:
     def encode(self, X, type_non_linearity='SIGMOID'):
         return self.non_linearity_fun(T.dot(X, self.W) + self.b, type=type_non_linearity)
 
-    def decode(self, X, linear=False, type_non_linearity='SIGMOID'):
+    def decode(self, X, type_non_linearity='SIGMOID'):
         return self.non_linearity_fun(T.dot(X, self.W_prime) + self.b_prime, type=type_non_linearity)
 
     def cost_fun(self, X_hat, cost_type='SQUAREMEAN'):
@@ -105,21 +104,51 @@ class AutoEncoder:
             warnings.warn('invalid cost function !!! using corss entropy deafult')
             return T.mean(-T.sum(self.X * T.log(X_hat) + (1 - self.X) * T.log(1 - X_hat), axis=1))
 
-    def rmsprop(self, learning_rate=0.1, decay_rate=0.99, have_sparsity_penalty=False,
-                non_linearity_on_output_layer='SIGMOID', non_linearity_on_hidden_layer='SIGMOID', cost_type='SQUAREMEAN',
-                corruption_quantity=0.0, lambada_ = 3e-3):
+    def get_encoder(self):
+        return function(
+            [self.X],
+            self.data_encoded
+        )
+
+    def get_decoder(self):
+        return function(
+            [self.X],
+            self.data_decoded
+        )
+
+    def regularizer(self, lambada_):
         """
         """
+        return (lambada_/2.0)*(T.sum(self.W**2) + T.sum(self.W_prime**2) )
+
+    def get_cost(self, non_linearity_on_hidden_layer, non_linearity_on_output_layer, corruption_quantity, cost_type):
         self.X = T.matrix('X_input', dtype=theano.config.floatX)
         X_noise = self.X * self.theano_rng.binomial(size=self.X.shape, n=1, p=1-corruption_quantity)
-        
+
         h = self.encode(X_noise, type_non_linearity=non_linearity_on_hidden_layer)
         X_hat = self.decode(h, type_non_linearity=non_linearity_on_output_layer)
 
-        cost = self.cost_fun(X_hat, cost_type=cost_type) + self.regularizer(lambada_)
+        # get encoded data as feature
+        self.data_encoded = self.encode(self.X, type_non_linearity=non_linearity_on_hidden_layer)
+
+        # get decoded data from feature
+        self.data_decoded = self.decode(self.data_encoded, type_non_linearity=non_linearity_on_output_layer)
+
+        cost = self.cost_fun(X_hat, cost_type=cost_type) # + self.regularizer(lambada_)
+
+        return cost
+
+    def rmsprop(self, learning_rate=0.1, decay_rate=0.99, have_sparsity_penalty=False,
+                non_linearity_on_hidden_layer='SIGMOID',
+                non_linearity_on_output_layer='SIGMOID',
+                cost_type='SQUAREMEAN',
+                corruption_quantity=0.0, lambada_ = 3e-3):
+        """
+        """
+        cost = self.get_cost(non_linearity_on_hidden_layer, non_linearity_on_output_layer, corruption_quantity, cost_type)
 
         if have_sparsity_penalty is True:
-            cost += self.sparsity_penalty(h) 
+            cost += self.sparsity_penalty(h)
         self.gparams = T.grad(cost, self.params)
 
         updates = []
@@ -136,26 +165,16 @@ class AutoEncoder:
 
         return cost, updates
 
-    def regularizer(self, lambada_):
-        """
-        """
-        return (lambada_/2.0)*(T.sum(self.W**2) + T.sum(self.W_prime**2) )
 
-    def sgd(self, learning_rate=0.1, have_sparsity_penalty=False, 
-            non_linearity_on_output_layer='SIGMOID', non_linearity_on_hidden_layer='SIGMOID', 
+    def sgd(self, learning_rate=0.1, have_sparsity_penalty=False,
+            non_linearity_on_output_layer='SIGMOID', non_linearity_on_hidden_layer='SIGMOID',
             cost_type='SQUAREMEAN', corruption_quantity=0.0, lambada_ = 3e-3):
         """
         """
-        self.X = T.matrix('X_input', dtype=theano.config.floatX)
-        X_noise = self.X * self.theano_rng.binomial(size=self.X.shape, n=1, p=1-corruption_quantity)
-        
-        h = self.encode(X_noise, type_non_linearity=non_linearity_on_hidden_layer)
-        X_hat = self.decode(h, type_non_linearity=non_linearity_on_output_layer)
-
-        cost = self.cost_fun(X_hat, cost_type=cost_type) + self.regularizer(lambada_)
+        cost = self.get_cost(non_linearity_on_hidden_layer, non_linearity_on_output_layer, corruption_quantity, cost_type)
 
         if have_sparsity_penalty is True:
-            cost += self.sparsity_penalty(h) 
+            cost += self.sparsity_penalty(h)
 
         self.gparams = T.grad(cost, self.params)
 
@@ -168,7 +187,7 @@ class AutoEncoder:
         self.data_shared.set_value(data)
 
     def fit(self, learning_rate=0.1, batch_size=100, learning_type='SGD', corruption_quantity=0.0,
-            non_linearity_on_output_layer='SIGMOID', non_linearity_on_hidden_layer='SIGMOID', 
+            non_linearity_on_hidden_layer='SIGMOID', non_linearity_on_output_layer='SIGMOID',
             have_sparsity_penalty=False, cost_type='SQUAREMEAN'):
 
         index = T.lscalar('index')
